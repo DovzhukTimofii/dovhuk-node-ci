@@ -19,3 +19,5 @@ crash.*.log
 Thumbs.db
 .vscode/
 .idea/
+
+readme.txt

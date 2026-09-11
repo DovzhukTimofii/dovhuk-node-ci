@@ -1,0 +1,6 @@
+aws_region       = "us-east-1"
+ami_id           = ""
+instance_type    = "t3.micro"
+key_name         = "devops-key"
+private_key_path = "../devops-key.pem"
+ssh_cidr         = "0.0.0.0/0"

@@ -1,0 +1,35 @@
+services:
+  app:
+    image: ${DOCKERHUB_USERNAME:-dovzhuktimofii}/nodeapp:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nodeapp
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/nodeapp
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:15
+    container_name: nodeapp-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: nodeapp
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nodeapp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:

@@ -1,4 +1,4 @@
-name: CI/CD to AWS EC2
+name: Docker CI/CD
 
 on:
   push:
@@ -12,9 +12,11 @@ env:
   EC2_HOST: ${{ secrets.EC2_HOST }}
   EC2_USER: ${{ secrets.EC2_USER }}
   EC2_SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
 jobs:
-  build-and-deploy:
+  build-test-docker-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -35,46 +37,79 @@ jobs:
       - name: Build project
         run: npm run build
 
+      - name: Generate Docker image tag
+        id: meta
+        shell: bash
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH="${GITHUB_REF_NAME//\//-}"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image locally
+        run: |
+          docker build -t nodeapp:${{ steps.meta.outputs.short_sha }} .
+
+      - name: Login to Docker Hub
+        if: ${{ github.event_name == 'push' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag and push Docker image
+        if: ${{ github.event_name == 'push' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
+        run: |
+          docker tag nodeapp:${{ steps.meta.outputs.short_sha }} "$DOCKERHUB_USERNAME/nodeapp:${{ steps.meta.outputs.short_sha }}"
+          docker tag nodeapp:${{ steps.meta.outputs.short_sha }} "$DOCKERHUB_USERNAME/nodeapp:${{ steps.meta.outputs.branch }}"
+          docker push "$DOCKERHUB_USERNAME/nodeapp:${{ steps.meta.outputs.short_sha }}"
+          docker push "$DOCKERHUB_USERNAME/nodeapp:${{ steps.meta.outputs.branch }}"
+
       - name: Decode SSH key
-        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' }}
+        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
         run: |
           echo "$EC2_SSH_KEY_B64" | base64 -d > ec2-key.pem
           chmod 600 ec2-key.pem
 
-      - name: Copy project to EC2
-        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' }}
+      - name: Copy Docker Compose file to EC2
+        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
         run: |
-          ssh -o StrictHostKeyChecking=no -i ec2-key.pem "$EC2_USER@$EC2_HOST" \
-            "mkdir -p ~/nodeapp && sudo apt-get update && sudo apt-get install -y rsync"
+          ssh -o StrictHostKeyChecking=no -i ec2-key.pem "$EC2_USER@$EC2_HOST" "mkdir -p ~/nodeapp"
+          scp -o StrictHostKeyChecking=no -i ec2-key.pem docker-compose.yml "$EC2_USER@$EC2_HOST:~/nodeapp/docker-compose.yml"
 
-          rsync -avz --delete \
-            --exclude '.git' \
-            --exclude 'node_modules' \
-            --exclude 'ec2-key.pem' \
-            -e "ssh -o StrictHostKeyChecking=no -i ec2-key.pem" \
-            ./ "$EC2_USER@$EC2_HOST:~/nodeapp/"
-
-      - name: Start application on EC2
-        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' }}
+      - name: Deploy with Docker Compose on EC2
+        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
         run: |
-          ssh -o StrictHostKeyChecking=no -i ec2-key.pem "$EC2_USER@$EC2_HOST" << 'EOF'
+          ssh -o StrictHostKeyChecking=no -i ec2-key.pem "$EC2_USER@$EC2_HOST" << EOF
             set -e
+
+            if command -v pm2 >/dev/null 2>&1; then
+              pm2 delete all || true
+              sudo npm uninstall -g pm2 || true
+            fi
+
+            if ! command -v docker >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y ca-certificates curl
+              sudo install -m 0755 -d /etc/apt/keyrings
+              sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+              sudo chmod a+r /etc/apt/keyrings/docker.asc
+              . /etc/os-release
+              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \$VERSION_CODENAME stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              sudo apt-get update
+              sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+            fi
+
             cd ~/nodeapp
-
-            if ! command -v node >/dev/null 2>&1; then
-              curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-              sudo apt-get install -y nodejs
-            fi
-
-            if ! command -v pm2 >/dev/null 2>&1; then
-              sudo npm install -g pm2
-            fi
-
-            npm install --omit=dev
-            pm2 restart nodeapp || pm2 start index.js --name nodeapp
-            pm2 save
+            sudo docker rm -f nodeapp || true
+            sudo DOCKERHUB_USERNAME="$DOCKERHUB_USERNAME" IMAGE_TAG="${{ steps.meta.outputs.short_sha }}" docker compose pull
+            sudo DOCKERHUB_USERNAME="$DOCKERHUB_USERNAME" IMAGE_TAG="${{ steps.meta.outputs.short_sha }}" docker compose up -d
+            sudo docker compose ps
           EOF
 
-      - name: EC2 deployment configuration notice
-        if: ${{ github.event_name == 'push' && (env.EC2_HOST == '' || env.EC2_USER == '' || env.EC2_SSH_KEY_B64 == '') }}
-        run: echo "CI build completed. Add EC2_HOST, EC2_USER and EC2_SSH_KEY_B64 repository secrets to enable automatic EC2 deployment."
+      - name: Deployment configuration notice
+        if: ${{ github.event_name == 'push' && (env.DOCKERHUB_USERNAME == '' || env.DOCKERHUB_TOKEN == '' || env.EC2_HOST == '' || env.EC2_USER == '' || env.EC2_SSH_KEY_B64 == '') }}
+        run: |
+          echo "CI and Docker build completed."
+          echo "Add DOCKERHUB_USERNAME and DOCKERHUB_TOKEN to publish the image."
+          echo "Add EC2_HOST, EC2_USER and EC2_SSH_KEY_B64 to enable EC2 deployment."

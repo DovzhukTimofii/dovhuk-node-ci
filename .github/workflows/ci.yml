@@ -1,0 +1,80 @@
+name: CI/CD to AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  EC2_HOST: ${{ secrets.EC2_HOST }}
+  EC2_USER: ${{ secrets.EC2_USER }}
+  EC2_SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build project
+        run: npm run build
+
+      - name: Decode SSH key
+        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' }}
+        run: |
+          echo "$EC2_SSH_KEY_B64" | base64 -d > ec2-key.pem
+          chmod 600 ec2-key.pem
+
+      - name: Copy project to EC2
+        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ec2-key.pem "$EC2_USER@$EC2_HOST" \
+            "mkdir -p ~/nodeapp && sudo apt-get update && sudo apt-get install -y rsync"
+
+          rsync -avz --delete \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude 'ec2-key.pem' \
+            -e "ssh -o StrictHostKeyChecking=no -i ec2-key.pem" \
+            ./ "$EC2_USER@$EC2_HOST:~/nodeapp/"
+
+      - name: Start application on EC2
+        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' }}
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ec2-key.pem "$EC2_USER@$EC2_HOST" << 'EOF'
+            set -e
+            cd ~/nodeapp
+
+            if ! command -v node >/dev/null 2>&1; then
+              curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+            fi
+
+            if ! command -v pm2 >/dev/null 2>&1; then
+              sudo npm install -g pm2
+            fi
+
+            npm install --omit=dev
+            pm2 restart nodeapp || pm2 start index.js --name nodeapp
+            pm2 save
+          EOF
+
+      - name: EC2 deployment configuration notice
+        if: ${{ github.event_name == 'push' && (env.EC2_HOST == '' || env.EC2_USER == '' || env.EC2_SSH_KEY_B64 == '') }}
+        run: echo "CI build completed. Add EC2_HOST, EC2_USER and EC2_SSH_KEY_B64 repository secrets to enable automatic EC2 deployment."

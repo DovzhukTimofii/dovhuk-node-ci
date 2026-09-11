@@ -1,14 +1,17 @@
 {
   "name": "ci-node-demo",
   "version": "1.0.0",
-  "description": "Node.js CI/CD demo deployed to AWS EC2 with GitHub Actions",
+  "description": "Node.js CI/CD demo with Docker, PostgreSQL, GitHub Actions and AWS EC2",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "test": "node -e \"console.log('Tests passed')\"",
-    "build": "node -e \"require('fs').mkdirSync('dist',{recursive:true}); require('fs').writeFileSync('dist/index.html','<h1>Hello CI/CD</h1>')\""
+    "build": "node -e \"require('fs').mkdirSync('dist',{recursive:true}); require('fs').writeFileSync('dist/index.html','<h1>Hello Docker CI/CD</h1>')\""
   },
-  "keywords": ["nodejs", "github-actions", "aws", "ec2", "cicd"],
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "keywords": ["nodejs", "docker", "postgresql", "github-actions", "aws", "ec2", "cicd"],
   "author": "DovzhukTimofii",
   "license": "ISC"
 }

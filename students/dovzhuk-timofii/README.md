@@ -241,6 +241,17 @@ sudo awk '{print "nodeapp " $1 " " $2}' /etc/ssh/ssh_host_ed25519_key.pub
 ## 7. Перевірка і здача
 
 1. Отримайте зміни PR локально, запустіть Docker Compose і перевірте форму.
+   Якщо автоматичний запуск PR не з’явився, з кореня репозиторію виконайте:
+
+   ```powershell
+   git fetch origin
+   git switch --track origin/final-devops-project
+   git commit --allow-empty -m "Run final project verification"
+   git push origin final-devops-project
+   ```
+
+   Якщо локальна гілка вже існує, використовуйте `git switch final-devops-project`.
+   Push у цю гілку запускає лише `verify`, без AWS деплою.
 2. Підготуйте AWS, спільний state, Docker Hub та Secrets за розділами вище.
 3. Злийте PR у main або запустіть workflow вручну на main після налаштування.
 4. Actions повинні показати успіх **обох** jobs: `verify` і `deploy`.

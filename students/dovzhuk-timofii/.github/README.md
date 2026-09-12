@@ -1,5 +1,4 @@
 # GitHub Actions
 
-Виконуваний workflow: [../../../.github/workflows/ci.yml](../../../.github/workflows/ci.yml).
-GitHub запускає workflow тільки з кореневої `.github/workflows/`, тому цей каталог
-пояснює відповідність структурі шаблону, а не містить неактивну копію YAML.
+[Workflow CI/CD](../../../.github/workflows/ci.yml) розміщено в кореневій `.github/workflows/`.
+Перевірки виконуються в job `verify`; деплой вмикається через repository variable `ENABLE_DEPLOY=true`.

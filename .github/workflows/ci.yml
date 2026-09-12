@@ -53,7 +53,7 @@ jobs:
 
   deploy:
     needs: verify
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.ENABLE_DEPLOY == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: production

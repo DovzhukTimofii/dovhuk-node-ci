@@ -29,7 +29,8 @@ variable "private_key_path" {
 }
 
 variable "ssh_cidr" {
-  description = "CIDR allowed to connect to SSH. 0.0.0.0/0 is convenient for GitHub-hosted runners but should only be temporary."
+  description = "CIDR allowed to connect to SSH. Set your public IPv4 /32 for manual access; CI supplies its runner IPv4 /32."
   type        = string
-  default     = "0.0.0.0/0"
+  default     = "127.0.0.1/32"
 }
+

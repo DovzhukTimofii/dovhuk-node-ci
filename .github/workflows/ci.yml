@@ -1,141 +1,134 @@
-name: Docker CI/CD + Terraform
-
+name: Ohm Lab CI/CD
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
-
-env:
-  EC2_HOST: ${{ secrets.EC2_HOST }}
-  EC2_USER: ${{ secrets.EC2_USER }}
-  EC2_SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
-  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ohm-lab-${{ github.event_name == 'pull_request' && github.ref || 'production' }}
+  cancel-in-progress: false
 jobs:
-  terraform-check:
+  verify:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: students/dovzhuk-timofii
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          terraform_version: 1.9.8
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: students/dovzhuk-timofii/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+      - run: terraform -chdir=infra fmt -check
+      - run: terraform -chdir=infra init -backend=false
+      - run: terraform -chdir=infra validate
+      - name: Build and run containers before deployment
+        env:
+          POSTGRES_PASSWORD: ci-test-only-password
+        run: |
+          docker compose up -d --build --wait --wait-timeout 120
+          curl --fail --retry 5 --retry-connrefused http://localhost:3000/ready
+          curl --fail 'http://localhost:3000/api/ohm?voltage=12&resistance=100' | python3 -c 'import json,sys; assert json.load(sys.stdin)["current"] == 0.12'
+      - name: Container diagnostics
+        if: failure()
+        env:
+          POSTGRES_PASSWORD: ci-test-only-password
+        run: docker compose logs --tail=80
+      - name: Stop test containers
+        if: always()
+        env:
+          POSTGRES_PASSWORD: ci-test-only-password
+        run: docker compose down -v
 
-      - name: Terraform format check
-        working-directory: terraform
-        run: terraform fmt -check
-
-      - name: Terraform init
-        working-directory: terraform
-        run: terraform init -backend=false
-
-      - name: Terraform validate
-        working-directory: terraform
-        run: terraform validate
-
-  build-test-docker-deploy:
+  deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    needs: terraform-check
-
+    timeout-minutes: 30
+    environment: production
+    defaults:
+      run:
+        working-directory: students/dovzhuk-timofii
+    env:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME || secrets.DOCKERHUB_USERNAME }}
+      DOCKER_TOKEN: ${{ secrets.DOCKER_TOKEN || secrets.DOCKERHUB_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_VAR_key_name: ${{ vars.EC2_KEY_NAME || 'devops-key' }}
+      TF_VAR_instance_type: ${{ vars.EC2_INSTANCE_TYPE || 't3.micro' }}
+      TF_VAR_ami_id: ${{ vars.EC2_AMI_ID }}
+      EC2_USER: ${{ secrets.EC2_USER || 'ubuntu' }}
+      EC2_SSH_KEY_B64: ${{ secrets.EC2_SSH_KEY_B64 }}
+      EC2_KNOWN_HOSTS: ${{ secrets.EC2_KNOWN_HOSTS }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Run tests
-        run: npm test
-
-      - name: Build project
-        run: npm run build
-
-      - name: Generate Docker image tag
-        id: meta
-        shell: bash
+      - uses: actions/checkout@v4
+      - name: Require deployment configuration
         run: |
-          SHORT_SHA="${GITHUB_SHA::7}"
-          BRANCH="${GITHUB_REF_NAME//\//-}"
-          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
-
-      - name: Build Docker image locally
-        run: |
-          docker build -t nodeapp:${{ steps.meta.outputs.short_sha }} .
-
-      - name: Login to Docker Hub
-        if: ${{ github.event_name == 'push' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Tag and push Docker image
-        if: ${{ github.event_name == 'push' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
-        run: |
-          docker tag nodeapp:${{ steps.meta.outputs.short_sha }} "$DOCKERHUB_USERNAME/nodeapp:${{ steps.meta.outputs.short_sha }}"
-          docker tag nodeapp:${{ steps.meta.outputs.short_sha }} "$DOCKERHUB_USERNAME/nodeapp:${{ steps.meta.outputs.branch }}"
-          docker push "$DOCKERHUB_USERNAME/nodeapp:${{ steps.meta.outputs.short_sha }}"
-          docker push "$DOCKERHUB_USERNAME/nodeapp:${{ steps.meta.outputs.branch }}"
-
-      - name: Decode SSH key
-        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
-        run: |
-          echo "$EC2_SSH_KEY_B64" | base64 -d > ec2-key.pem
-          chmod 600 ec2-key.pem
-
-      - name: Copy Docker Compose file to EC2
-        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ec2-key.pem "$EC2_USER@$EC2_HOST" "mkdir -p ~/nodeapp"
-          scp -o StrictHostKeyChecking=no -i ec2-key.pem docker-compose.yml "$EC2_USER@$EC2_HOST:~/nodeapp/docker-compose.yml"
-
-      - name: Deploy with Docker Compose on EC2
-        if: ${{ github.event_name == 'push' && env.EC2_HOST != '' && env.EC2_USER != '' && env.EC2_SSH_KEY_B64 != '' && env.DOCKERHUB_USERNAME != '' && env.DOCKERHUB_TOKEN != '' }}
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ec2-key.pem "$EC2_USER@$EC2_HOST" << EOF
-            set -e
-
-            if command -v pm2 >/dev/null 2>&1; then
-              pm2 delete all || true
-              sudo npm uninstall -g pm2 || true
+          for name in DOCKER_USERNAME DOCKER_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY TF_STATE_BUCKET EC2_SSH_KEY_B64 EC2_KNOWN_HOSTS POSTGRES_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing $name. See students/dovzhuk-timofii/README.md"
+              exit 1
             fi
-
-            if ! command -v docker >/dev/null 2>&1; then
-              sudo apt-get update
-              sudo apt-get install -y ca-certificates curl
-              sudo install -m 0755 -d /etc/apt/keyrings
-              sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-              sudo chmod a+r /etc/apt/keyrings/docker.asc
-              . /etc/os-release
-              echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \$VERSION_CODENAME stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-              sudo apt-get update
-              sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-            fi
-
-            cd ~/nodeapp
-            sudo docker rm -f nodeapp || true
-            sudo DOCKERHUB_USERNAME="$DOCKERHUB_USERNAME" IMAGE_TAG="${{ steps.meta.outputs.short_sha }}" docker compose pull
-            sudo DOCKERHUB_USERNAME="$DOCKERHUB_USERNAME" IMAGE_TAG="${{ steps.meta.outputs.short_sha }}" docker compose up -d
-            sudo docker compose ps
-          EOF
-
-      - name: Deployment configuration notice
-        if: ${{ github.event_name == 'push' && (env.DOCKERHUB_USERNAME == '' || env.DOCKERHUB_TOKEN == '' || env.EC2_HOST == '' || env.EC2_USER == '' || env.EC2_SSH_KEY_B64 == '') }}
+          done
+          [[ "$DOCKER_USERNAME" =~ ^[a-z0-9][a-z0-9_-]*$ ]]
+          [[ "$EC2_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ env.DOCKER_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - name: Publish immutable image
+        uses: docker/build-push-action@v6
+        with:
+          context: students/dovzhuk-timofii
+          push: true
+          tags: ${{ env.DOCKER_USERNAME }}/nodeapp:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+      - name: Initialize shared state
         run: |
-          echo "CI, Terraform validation and Docker build completed."
-          echo "Add DOCKERHUB_USERNAME and DOCKERHUB_TOKEN to publish the image."
-          echo "After terraform apply, update EC2_HOST with the instance_ip output."
-          echo "Add EC2_USER and EC2_SSH_KEY_B64 to enable EC2 deployment."
+          terraform -chdir=infra init -backend-config="bucket=$TF_STATE_BUCKET" -backend-config="region=$AWS_REGION"
+      - name: Create or update EC2
+        id: infra
+        run: |
+          export TF_VAR_aws_region="$AWS_REGION"
+          RUNNER_IP=$(curl --fail --silent --show-error https://checkip.amazonaws.com)
+          python3 -c 'import ipaddress,sys; ipaddress.IPv4Address(sys.argv[1])' "$RUNNER_IP"
+          export TF_VAR_ssh_cidr="$RUNNER_IP/32"
+          terraform -chdir=infra plan -lock-timeout=5m -out=deploy.tfplan
+          terraform -chdir=infra apply -lock-timeout=5m deploy.tfplan
+          echo "host=$(terraform -chdir=infra output -raw instance_ip)" >> "$GITHUB_OUTPUT"
+          aws ec2 wait instance-status-ok --instance-ids "$(terraform -chdir=infra output -raw instance_id)" --region "$AWS_REGION"
+      - name: Deploy and verify application
+        env:
+          EC2_HOST: ${{ steps.infra.outputs.host }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: bash scripts/deploy.sh
+      - name: Deployment result
+        env:
+          EC2_HOST: ${{ steps.infra.outputs.host }}
+        run: |
+          echo "### Ohm Lab" >> "$GITHUB_STEP_SUMMARY"
+          echo "Application: http://$EC2_HOST:3000" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image: $DOCKER_USERNAME/nodeapp:$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

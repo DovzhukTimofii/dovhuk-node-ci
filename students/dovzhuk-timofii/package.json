@@ -1,0 +1,28 @@
+{
+  "name": "ohm-lab",
+  "version": "1.0.0",
+  "description": "Node.js CI/CD demo with Docker, PostgreSQL, GitHub Actions and AWS EC2",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "build": "node --check src/server.js"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "keywords": [
+    "nodejs",
+    "docker",
+    "postgresql",
+    "github-actions",
+    "aws",
+    "ec2",
+    "cicd"
+  ],
+  "author": "DovzhukTimofii",
+  "license": "ISC",
+  "engines": {
+    "node": ">=22"
+  }
+}

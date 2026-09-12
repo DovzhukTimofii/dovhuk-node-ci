@@ -17,3 +17,4 @@ output "ssh_command" {
   description = "Example SSH command"
   value       = "ssh -i ${var.private_key_path} ubuntu@${aws_instance.nodeapp.public_ip}"
 }
+

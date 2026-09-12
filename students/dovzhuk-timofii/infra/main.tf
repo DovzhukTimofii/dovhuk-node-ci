@@ -1,5 +1,11 @@
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.10.0"
+
+  backend "s3" {
+    key          = "dovhuk-node-ci/terraform.tfstate"
+    encrypt      = true
+    use_lockfile = true
+  }
 
   required_providers {
     aws = {
@@ -80,8 +86,14 @@ resource "aws_instance" "nodeapp" {
   vpc_security_group_ids      = [aws_security_group.nodeapp_sg.id]
   associate_public_ip_address = true
 
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [ami]
+  }
+
   tags = {
     Name      = "nodeapp-terraform"
     ManagedBy = "Terraform"
   }
 }
+

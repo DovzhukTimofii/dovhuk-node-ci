@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="uk"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ohm Lab · Калькулятор електричного кола</title>
+<style>body{font:18px system-ui;background:#101b2b;color:#e7edf4;margin:0;padding:8vh 24px}main{max-width:620px;margin:auto}small{color:#69d8bf;letter-spacing:2px}h1{font-size:42px}label{display:block;margin:24px 0 8px}input,button{font:inherit;border-radius:8px;padding:12px;box-sizing:border-box}input{width:100%;border:1px solid #65758a;background:#1c2b3f;color:white}button{margin:24px 0;background:#69d8bf;border:0;cursor:pointer}output{display:block;min-height:60px;padding:20px;background:#1c2b3f;border-radius:10px}footer{font-size:14px;color:#acbace;margin-top:32px}</style>
+<main><small>OHM LAB / DEVOPS PROJECT</small><h1>Просте коло.<br>Точний розрахунок.</h1><p>Сила струму й потужність за напругою та опором: I = U / R, P = U × I.</p>
+<form id="form"><label for="voltage">Напруга U, В</label><input id="voltage" name="voltage" type="number" min="0" step="any" value="12" required><label for="resistance">Опір R, Ом</label><input id="resistance" name="resistance" type="number" min="0.000001" step="any" value="100" required><button>Розрахувати</button></form>
+<output id="result" aria-live="polite">Введіть параметри та натисніть «Розрахувати».</output>
+<footer>Довжук Тимофій · КН-41<br>Навчальна модель резистивного кола постійного струму.</footer></main>
+<script>document.querySelector('#form').addEventListener('submit',async e=>{e.preventDefault();const out=document.querySelector('#result');try{const response=await fetch('/api/ohm?'+new URLSearchParams(new FormData(e.target)));const data=await response.json();if(!response.ok)throw Error(data.error);out.textContent=`Струм: ${Number(data.current.toPrecision(6))} А · Потужність: ${Number(data.power.toPrecision(6))} Вт`;}catch(err){out.textContent=err.message;}});</script></html>
